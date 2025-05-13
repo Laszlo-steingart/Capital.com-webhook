@@ -10,23 +10,26 @@ BASE_URL = "https://api-capital.backend-capital.com"
 # Session erstellen
 def create_session():
     session = requests.Session()
-    session.headers.update({"X-CAP-API-KEY": API_KEY, "Content-Type": "application/json"})
+    session.headers.update({
+        "X-CAP-API-KEY": API_KEY,
+        "Content-Type": "application/json"
+    })
     return session
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        # Sicherstellen, dass wir gültiges JSON bekommen
+        # JSON einlesen
         try:
             data = request.get_json(force=True)
         except Exception as json_error:
-            print("❌ Fehler beim Parsen von JSON:", str(json_error))
+            print("❌ JSON-Fehler:", str(json_error))
             return "Invalid JSON", 400
 
         print("✅ Webhook empfangen:", data)
 
         if not data:
-            print("❌ Kein JSON erhalten")
+            print("❌ Kein JSON empfangen")
             return "No data", 400
 
         symbol = data.get("symbol")
@@ -41,9 +44,9 @@ def webhook():
 
         session = create_session()
 
-        # Produkt-ID abrufen
+        # Produkt abrufen
         resp = session.get(f"{BASE_URL}/products?query={symbol}")
-        print("📦 Produkt-Suche Antwort:", resp.text)
+        print("🔎 Produkt-Suche Antwort:", resp.status_code, resp.text)
 
         if resp.status_code != 200:
             print("❌ Produkt-Suche fehlgeschlagen")
@@ -51,13 +54,13 @@ def webhook():
 
         products = resp.json().get("products", [])
         if not products:
-            print("❌ Kein Produkt gefunden für Symbol:", symbol)
+            print("❌ Kein Produkt gefunden für:", symbol)
             return "Product not found", 404
 
         product_id = products[0]["id"]
         print("✅ Produkt-ID gefunden:", product_id)
 
-        # Orderdaten
+        # Order vorbereiten
         order_data = {
             "market": product_id,
             "direction": "BUY" if action.lower() == "buy" else "SELL",
@@ -65,16 +68,16 @@ def webhook():
             "quantity": 1
         }
 
-        print("📤 Sende Order an Capital.com:", order_data)
+        print("📤 Sende Order:", order_data)
 
         order_resp = session.post(f"{BASE_URL}/positions", json=order_data)
-        print("📨 Antwort von Capital.com:", order_resp.text)
+        print("📨 Order-Antwort:", order_resp.status_code, order_resp.text)
 
         if order_resp.status_code != 201:
             print("❌ Order fehlgeschlagen:", order_resp.text)
             return f"Order failed: {order_resp.text}", 500
 
-        print("✅ Order erfolgreich aufgegeben")
+        print("✅ Order erfolgreich ausgeführt")
         return jsonify({"status": "ok", "message": "Order placed"}), 200
 
     except Exception as e:
