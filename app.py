@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 import requests
+import traceback  # Wichtig für vollständige Fehlermeldungen
 
 app = Flask(__name__)
 
@@ -14,43 +15,66 @@ def create_session():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.json
-    if not data:
-        return "No data", 400
+    try:
+        data = request.json
+        print("Webhook empfangen:", data)
 
-    symbol = data.get("symbol")
-    action = data.get("action")
-    price = data.get("price")
+        if not data:
+            print("❌ Kein JSON empfangen")
+            return "No data", 400
 
-    if not all([symbol, action, price]):
-        return "Missing fields", 400
+        symbol = data.get("symbol")
+        action = data.get("action")
+        price = data.get("price")
 
-    session = create_session()
+        if not all([symbol, action, price]):
+            print("❌ Fehlende Felder:", data)
+            return "Missing fields", 400
 
-    # Produkt-ID abrufen
-    resp = session.get(f"{BASE_URL}/products?query={symbol}")
-    if resp.status_code != 200:
-        return "Market lookup failed", 500
+        print(f"➡ Symbol: {symbol}, Action: {action}, Price: {price}")
 
-    products = resp.json().get("products", [])
-    if not products:
-        return "Product not found", 404
+        session = create_session()
 
-    product_id = products[0]["id"]
+        # Produkt-ID abrufen
+        resp = session.get(f"{BASE_URL}/products?query={symbol}")
+        print("📦 Produkt-Suche Antwort:", resp.text)
 
-    # Orderdaten
-    order_data = {
-        "market": product_id,
-        "direction": "BUY" if action.lower() == "buy" else "SELL",
-        "orderType": "MARKET",
-        "quantity": 1
-    }
+        if resp.status_code != 200:
+            print("❌ Market lookup fehlgeschlagen")
+            return "Market lookup failed", 500
 
-    order_resp = session.post(f"{BASE_URL}/positions", json=order_data)
-    if order_resp.status_code != 201:
-        return f"Order failed: {order_resp.text}", 500
+        products = resp.json().get("products", [])
+        if not products:
+            print("❌ Kein Produkt gefunden")
+            return "Product not found", 404
 
-    return jsonify({"status": "ok", "message": "Order placed"}), 200
+        product_id = products[0]["id"]
+        print("✅ Produkt-ID gefunden:", product_id)
+
+        # Orderdaten
+        order_data = {
+            "market": product_id,
+            "direction": "BUY" if action.lower() == "buy" else "SELL",
+            "orderType": "MARKET",
+            "quantity": 1
+        }
+
+        print("📤 Sende Order:", order_data)
+
+        order_resp = session.post(f"{BASE_URL}/positions", json=order_data)
+        print("📨 Antwort auf Order:", order_resp.text)
+
+        if order_resp.status_code != 201:
+            print("❌ Order fehlgeschlagen:", order_resp.text)
+            return f"Order failed: {order_resp.text}", 500
+
+        print("✅ Order erfolgreich")
+        return jsonify({"status": "ok", "message": "Order placed"}), 200
+
+    except Exception as e:
+        print("❌ Ausnahme aufgetreten:", str(e))
+        traceback.print_exc()
+        return "Server error", 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
