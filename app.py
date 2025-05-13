@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 import requests
-import traceback  # Wichtig für vollständige Fehlermeldungen
+import traceback
 
 app = Flask(__name__)
 
@@ -16,11 +16,17 @@ def create_session():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        data = request.json
-        print("Webhook empfangen:", data)
+        # Sicherstellen, dass wir gültiges JSON bekommen
+        try:
+            data = request.get_json(force=True)
+        except Exception as json_error:
+            print("❌ Fehler beim Parsen von JSON:", str(json_error))
+            return "Invalid JSON", 400
+
+        print("✅ Webhook empfangen:", data)
 
         if not data:
-            print("❌ Kein JSON empfangen")
+            print("❌ Kein JSON erhalten")
             return "No data", 400
 
         symbol = data.get("symbol")
@@ -28,7 +34,7 @@ def webhook():
         price = data.get("price")
 
         if not all([symbol, action, price]):
-            print("❌ Fehlende Felder:", data)
+            print("❌ Fehlende Felder im Request:", data)
             return "Missing fields", 400
 
         print(f"➡ Symbol: {symbol}, Action: {action}, Price: {price}")
@@ -40,12 +46,12 @@ def webhook():
         print("📦 Produkt-Suche Antwort:", resp.text)
 
         if resp.status_code != 200:
-            print("❌ Market lookup fehlgeschlagen")
+            print("❌ Produkt-Suche fehlgeschlagen")
             return "Market lookup failed", 500
 
         products = resp.json().get("products", [])
         if not products:
-            print("❌ Kein Produkt gefunden")
+            print("❌ Kein Produkt gefunden für Symbol:", symbol)
             return "Product not found", 404
 
         product_id = products[0]["id"]
@@ -59,20 +65,20 @@ def webhook():
             "quantity": 1
         }
 
-        print("📤 Sende Order:", order_data)
+        print("📤 Sende Order an Capital.com:", order_data)
 
         order_resp = session.post(f"{BASE_URL}/positions", json=order_data)
-        print("📨 Antwort auf Order:", order_resp.text)
+        print("📨 Antwort von Capital.com:", order_resp.text)
 
         if order_resp.status_code != 201:
             print("❌ Order fehlgeschlagen:", order_resp.text)
             return f"Order failed: {order_resp.text}", 500
 
-        print("✅ Order erfolgreich")
+        print("✅ Order erfolgreich aufgegeben")
         return jsonify({"status": "ok", "message": "Order placed"}), 200
 
     except Exception as e:
-        print("❌ Ausnahme aufgetreten:", str(e))
+        print("❌ Allgemeiner Fehler:", str(e))
         traceback.print_exc()
         return "Server error", 500
 
