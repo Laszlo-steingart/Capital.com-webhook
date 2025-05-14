@@ -4,7 +4,7 @@ import traceback
 
 app = Flask(__name__)
 
-API_KEY = "bpSjrmwlN3zbTloa"
+API_KEY = "mV5fieaBA6qmRQBV"
 BASE_URL = "https://api-capital.backend-capital.com"
 
 # Session erstellen
