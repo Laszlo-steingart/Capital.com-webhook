@@ -1,73 +1,86 @@
 from flask import Flask, request, jsonify
 import requests
 import traceback
+import logging
 
 app = Flask(__name__)
 
-EMAIL = "l.steingart@icloud.com"
-PASSWORD = "bE@u3kMaK879TfY"
+# >>>>>>>> ZUGANGSDATEN <<<<<<<<
 API_KEY = "mV5fieaBA6qmRQBV"
+USERNAME = "l.steingart@icloud.com"
+PASSWORD = "Laszlo123!"
 BASE_URL = "https://api-capital.backend-capital.com"
 
-def create_authenticated_session():
-    session = requests.Session()
-    session.headers.update({
+logging.basicConfig(level=logging.DEBUG)
+
+# Login und Tokens abrufen
+def login():
+    url = f"{BASE_URL}/api/v1/session"
+    headers = {
         "X-CAP-API-KEY": API_KEY,
         "Content-Type": "application/json"
-    })
-
-    login_payload = {
-        "identifier": EMAIL,
+    }
+    payload = {
+        "identifier": USERNAME,
         "password": PASSWORD
     }
 
-    login_resp = session.post(f"{BASE_URL}/api/v1/session", json=login_payload)
-    if login_resp.status_code != 200:
-        print("❌ Login fehlgeschlagen:", login_resp.text)
-        return None
+    resp = requests.post(url, json=payload, headers=headers)
+    if resp.status_code != 200:
+        logging.error("❌ Login fehlgeschlagen: %s", resp.text)
+        return None, None
 
-    tokens = login_resp.headers
-    session.headers.update({
-        "CST": tokens.get("CST"),
-        "X-SECURITY-TOKEN": tokens.get("X-SECURITY-TOKEN")
-    })
+    cst = resp.headers.get("CST")
+    security_token = resp.headers.get("X-SECURITY-TOKEN")
 
-    print("✅ Login erfolgreich")
-    return session
+    if not cst or not security_token:
+        logging.error("❌ Token fehlen im Header")
+        return None, None
 
+    logging.info("✅ Login erfolgreich")
+    return cst, security_token
+
+# Webhook-Endpunkt
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
         data = request.get_json(force=True)
-        print("📩 Webhook empfangen:", data)
+        logging.info("📩 Webhook empfangen: %s", data)
 
         symbol = data.get("symbol")
         action = data.get("action")
-        size = data.get("size")
+        size = float(data.get("size", 0.03))
 
         if not all([symbol, action, size]):
-            print("❌ Fehlende Daten:", data)
             return "Fehlende Felder", 400
 
-        session = create_authenticated_session()
-        if session is None:
+        # Login
+        cst, security_token = login()
+        if not cst or not security_token:
             return "Login fehlgeschlagen", 500
 
-        # Produkt-ID finden
-        product_resp = session.get(f"{BASE_URL}/api/v1/products?searchTerm={symbol}")
-        if product_resp.status_code != 200:
-            print("❌ Produktsuche fehlgeschlagen:", product_resp.text)
+        # Produkt suchen
+        headers = {
+            "X-CAP-API-KEY": API_KEY,
+            "CST": cst,
+            "X-SECURITY-TOKEN": security_token,
+            "Content-Type": "application/json"
+        }
+
+        market_resp = requests.get(f"{BASE_URL}/api/v1/markets?searchTerm={symbol}", headers=headers)
+        if market_resp.status_code != 200:
+            logging.error("❌ Produktsuche fehlgeschlagen: %s", market_resp.text)
             return "Produktsuche fehlgeschlagen", 500
 
-        products = product_resp.json().get("markets", [])
-        if not products:
-            print("❌ Kein Produkt gefunden:", symbol)
-            return "Kein Produkt gefunden", 404
+        markets = market_resp.json().get("markets", [])
+        if not markets:
+            logging.error("❌ Kein Markt gefunden")
+            return "Produkt nicht gefunden", 404
 
-        epic = products[0]["epic"]
-        print("✅ Gefundener EPIC:", epic)
+        epic = markets[0]["epic"]
+        logging.info("✅ Gefundener EPIC: %s", epic)
 
-        # Orderdaten vorbereiten
+        # Order senden
         order_data = {
             "epic": epic,
             "direction": action.upper(),
@@ -78,20 +91,17 @@ def webhook():
             "guaranteedStop": False
         }
 
-        print("📤 Sende Order:", order_data)
-
-        order_resp = session.post(f"{BASE_URL}/api/v1/positions", json=order_data)
-        print("📨 Antwort:", order_resp.status_code, order_resp.text)
-
+        order_resp = requests.post(f"{BASE_URL}/api/v1/positions", json=order_data, headers=headers)
         if order_resp.status_code != 201:
-            return f"Order fehlgeschlagen: {order_resp.text}", 500
+            logging.error("❌ Order fehlgeschlagen: %s", order_resp.text)
+            return "Order fehlgeschlagen", 500
 
-        return jsonify({"status": "ok", "message": "Order erfolgreich"}), 200
+        logging.info("✅ Order erfolgreich ausgeführt")
+        return jsonify({"status": "ok", "message": "Order ausgeführt"}), 200
 
     except Exception as e:
-        print("❌ Ausnahme:", str(e))
-        traceback.print_exc()
-        return "Interner Fehler", 500
+        logging.exception("❌ Fehler im Webhook")
+        return "Serverfehler", 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
