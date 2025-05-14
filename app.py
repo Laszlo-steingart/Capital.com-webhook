@@ -46,7 +46,12 @@ def webhook():
 
         # Produkt abrufen
         resp = session.get(f"{BASE_URL}/products?query={symbol}")
-        print("🔎 Produkt-Suche Antwort:", resp.status_code, resp.text)
+        print(f"🔎 Produkt-Suche Status: {resp.status_code}")
+        try:
+            print("🔎 Produkt-Suche JSON:", resp.json())
+        except Exception as e:
+            print("❌ Fehler beim JSON-Parsing:", str(e))
+            print("🔎 Produkt-Suche Inhalt (Text):", resp.text)
 
         if resp.status_code != 200:
             print("❌ Produkt-Suche fehlgeschlagen")
