@@ -7,13 +7,14 @@ app = Flask(__name__)
 
 # >>>>>>>> ZUGANGSDATEN <<<<<<<<
 API_KEY = "mV5fieaBA6qmRQBV"
-API_USERNAME = "l.steingart@icloud.com"  # <--- HIER deinen API-Login-Namen eintragen
+API_USERNAME = "l.steingart@icloud.com"  # <-- hier richtiger API-Loginname eintragen
 API_PASSWORD = "bE@u3kMaK879TfY"
 TOTP_SECRET = "5USUDSPOGCQ3NMKB"
 BASE_URL = "https://api-capital.backend-capital.com"
 
 logging.basicConfig(level=logging.DEBUG)
 
+# 🔐 Login mit TOTP
 def login():
     otp = pyotp.TOTP(TOTP_SECRET).now()
     logging.info(f"🔐 Generierter OTP: {otp}")
@@ -44,6 +45,7 @@ def login():
     logging.info("✅ Login erfolgreich mit 2FA")
     return cst, security_token
 
+# 📩 Webhook-Endpunkt
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
@@ -57,10 +59,12 @@ def webhook():
         if not all([symbol, action, size]):
             return "Fehlende Felder", 400
 
+        # Login
         cst, security_token = login()
         if not cst or not security_token:
             return "Login fehlgeschlagen", 500
 
+        # Headers für weitere Requests
         headers = {
             "X-CAP-API-KEY": API_KEY,
             "CST": cst,
@@ -68,6 +72,7 @@ def webhook():
             "Content-Type": "application/json"
         }
 
+        # 🔍 Produkt suchen
         market_resp = requests.get(f"{BASE_URL}/api/v1/markets?searchTerm={symbol}", headers=headers)
         if market_resp.status_code != 200:
             logging.error("❌ Produktsuche fehlgeschlagen: %s", market_resp.text)
@@ -81,6 +86,7 @@ def webhook():
         epic = markets[0]["epic"]
         logging.info("✅ Gefundener EPIC: %s", epic)
 
+        # 📤 Order senden
         order_data = {
             "epic": epic,
             "direction": action.upper(),
@@ -94,30 +100,33 @@ def webhook():
         order_resp = requests.post(f"{BASE_URL}/api/v1/positions", json=order_data, headers=headers)
         deal_ref = order_resp.json().get("dealReference")
 
-        if not deal_ref:
-            logging.warning("⚠️ Keine Deal-Referenz erhalten: %s", order_resp.text)
-            return jsonify({"status": "warn", "message": "Keine Referenz erhalten, Order evtl. fehlgeschlagen"}), 500
+        if order_resp.status_code != 201 or not deal_ref:
+            logging.error("❌ Order fehlgeschlagen: %s", order_resp.text)
+            return diagnose_deal_failure(deal_ref, headers)
 
-        # ⏳ Order-Bestätigung abrufen
-        confirm_resp = requests.get(f"{BASE_URL}/api/v1/confirms/{deal_ref}", headers=headers)
-        if confirm_resp.status_code != 200:
-            logging.error("❌ Orderbestätigung fehlgeschlagen: %s", confirm_resp.text)
-            return jsonify({"status": "error", "message": "Orderbestätigung fehlgeschlagen"}), 500
-
-        confirm_data = confirm_resp.json()
-        deal_status = confirm_data.get("dealStatus", "").upper()
-
-        if deal_status == "ACCEPTED":
-            logging.info("✅✅✅ Order wurde vollständig akzeptiert!")
-            logging.info("🔄 Details: %s", confirm_data)
-            return jsonify({"status": "ok", "message": "Order akzeptiert", "details": confirm_data}), 200
-        else:
-            logging.warning("🚫 Order wurde abgelehnt: %s", confirm_data)
-            return jsonify({"status": "error", "message": "Order abgelehnt", "details": confirm_data}), 400
+        logging.info("✅ Order erfolgreich ausgeführt")
+        return jsonify({"status": "ok", "message": "Order ausgeführt"}), 200
 
     except Exception as e:
         logging.exception("❌ Fehler im Webhook")
         return "Serverfehler", 500
 
+# 🩺 Diagnose: Warum Order fehlgeschlagen?
+def diagnose_deal_failure(deal_ref, headers):
+    if not deal_ref:
+        return jsonify({"status": "error", "message": "Order fehlgeschlagen (kein Deal-Ref)"})
+
+    url = f"{BASE_URL}/api/v1/confirms/{deal_ref}"
+    resp = requests.get(url, headers=headers)
+
+    if resp.status_code != 200:
+        logging.error("❌ Diagnose-Request fehlgeschlagen: %s", resp.text)
+        return jsonify({"status": "error", "message": "Order fehlgeschlagen (Details nicht abrufbar)"})
+
+    details = resp.json()
+    logging.error("❌ Orderfehler laut Capital.com: %s", details)
+    return jsonify({"status": "error", "message": "Order abgelehnt", "details": details})
+
+# 🔁 Lokales Testen
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
