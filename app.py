@@ -7,7 +7,7 @@ app = Flask(__name__)
 
 # >>>>>>>> ZUGANGSDATEN <<<<<<<<
 API_KEY = "mV5fieaBA6qmRQBV"
-API_USERNAME = "working key"  # <-- wichtig: kein @, das ist der API-Login
+API_USERNAME = "l.steingart@icloud.com"  # <-- wichtig: kein @, das ist der API-Login
 API_PASSWORD = "bE@u3kMaK879TfY"
 TOTP_SECRET = "5USUDSPOGCQ3NMKB"
 BASE_URL = "https://api-capital.backend-capital.com"
