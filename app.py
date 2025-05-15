@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import requests
 import traceback
 import logging
+import pyotp
 
 app = Flask(__name__)
 
@@ -9,12 +10,16 @@ app = Flask(__name__)
 API_KEY = "mV5fieaBA6qmRQBV"
 USERNAME = "l.steingart@icloud.com"
 PASSWORD = "Laszlo123!"
-BASE_URL = "https://api-capital.backend-capital.com"
+TOTP_SECRET = "5USUDSPOGCQ3NMKB"
+BASE_URL = "https://api-capital.backend-capital.com"  # oder demo-URL
 
 logging.basicConfig(level=logging.DEBUG)
 
-# Login und Tokens abrufen
+# 🔐 Login und Tokens abrufen mit TOTP (2FA)
 def login():
+    otp = pyotp.TOTP(TOTP_SECRET).now()
+    logging.info(f"🔐 Generierter OTP: {otp}")
+
     url = f"{BASE_URL}/api/v1/session"
     headers = {
         "X-CAP-API-KEY": API_KEY,
@@ -22,7 +27,8 @@ def login():
     }
     payload = {
         "identifier": USERNAME,
-        "password": PASSWORD
+        "password": PASSWORD,
+        "oneTimePassword": otp
     }
 
     resp = requests.post(url, json=payload, headers=headers)
@@ -37,10 +43,10 @@ def login():
         logging.error("❌ Token fehlen im Header")
         return None, None
 
-    logging.info("✅ Login erfolgreich")
+    logging.info("✅ Login erfolgreich mit 2FA")
     return cst, security_token
 
-# Webhook-Endpunkt
+# 📩 Webhook-Endpunkt
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
@@ -54,7 +60,7 @@ def webhook():
         if not all([symbol, action, size]):
             return "Fehlende Felder", 400
 
-        # Login
+        # Login mit TOTP
         cst, security_token = login()
         if not cst or not security_token:
             return "Login fehlgeschlagen", 500
@@ -103,5 +109,6 @@ def webhook():
         logging.exception("❌ Fehler im Webhook")
         return "Serverfehler", 500
 
+# 🔁 Lokales Testen (nicht auf Render nötig)
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
