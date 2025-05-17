@@ -66,35 +66,44 @@ def place_order(direction, epic, price, size):
     return response.json()
 
 # === Webhook Endpoint ===
-@app.route('/webhook', methods=['POST'])
+@app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.get_json()
-    print("Received Webhook:", data)
-
     try:
-        action = data["action"]
-        symbol = data["symbol"].replace("/", "")  # z.B. EURUSD
-        price = float(data["price"])
-        size = float(data["size"])
+        data = request.get_json()
+        print("📩 Webhook empfangen:", data)
 
-        # MAPPING zu Capital.com Epic-Codes (hier Beispielhaft!)
+        if not data:
+            return jsonify({"error": "Kein oder ungültiges JSON empfangen"}), 400
+
+        action = data.get("action")
+        symbol = data.get("symbol", "").replace("/", "")
+        price = float(data.get("price", 0))
+        size = float(data.get("size", 0))
+
+        if not all([action, symbol, price, size]):
+            return jsonify({"error": "Fehlende Felder in Webhook"}), 400
+
+        # Symbol-Mapping zu Capital.com EPIC
         symbol_map = {
             "EURUSD": "CS.D.EURUSD.CFD.IP",
-            "USDJPY": "CS.D.USDJPY.CFD.IP",
-            # Weitere hinzufügen bei Bedarf
+            "USDJPY": "CS.D.USDJPY.CFD.IP"
+            # Weitere Symbole hier eintragen
         }
 
         epic = symbol_map.get(symbol.upper())
         if not epic:
-            return jsonify({"status": "error", "message": f"Unbekanntes Symbol: {symbol}"}), 400
+            print("❌ Symbol nicht gefunden:", symbol)
+            return jsonify({"error": f"Unbekanntes Symbol: {symbol}"}), 400
 
         result = place_order(action, epic, price, size)
+        print("✅ Order gesendet:", result)
         return jsonify({"status": "success", "details": result})
 
     except Exception as e:
+        print("❌ Fehler beim Webhook:", str(e))
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# === Startpunkt für Render: bind to 0.0.0.0 und nutze Umgebungsport ===
-if __name__ == '__main__':
+# === Flask starten ===
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
