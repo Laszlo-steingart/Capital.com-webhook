@@ -1,149 +1,103 @@
 from flask import Flask, request, jsonify
 import requests
-import logging
+import hmac
+import hashlib
+import time
+import base64
 import pyotp
 
 app = Flask(__name__)
 
-# >>>>>>>> ZUGANGSDATEN <<<<<<<<
+# === Capital.com Zugangsdaten ===
 API_KEY = "mV5fieaBA6qmRQBV"
 API_USERNAME = "l.steingart@icloud.com"
 API_PASSWORD = "bE@u3kMaK879TfY"
 TOTP_SECRET = "5USUDSPOGCQ3NMKB"
 BASE_URL = "https://api-capital.backend-capital.com"
 
-logging.basicConfig(level=logging.INFO)
+# === TOTP generieren ===
+def get_totp(secret):
+    totp = pyotp.TOTP(secret)
+    return totp.now()
 
-def login():
-    otp = pyotp.TOTP(TOTP_SECRET).now()
-    logging.info(f"🔐 Generierter OTP: {otp}")
+# === Capital.com Session aufbauen ===
+def get_session():
+    url = f"{BASE_URL}/api/v1/session"
+    payload = {
+        "identifier": API_USERNAME,
+        "password": API_PASSWORD,
+        "encrypted": False,
+        "totpCode": get_totp(TOTP_SECRET)
+    }
 
     headers = {
         "X-CAP-API-KEY": API_KEY,
         "Content-Type": "application/json"
     }
-    payload = {
-        "identifier": API_USERNAME,
-        "password": API_PASSWORD,
-        "oneTimePassword": otp
+
+    response = requests.post(url, json=payload, headers=headers)
+    response.raise_for_status()
+
+    return {
+        "CST": response.headers.get("CST"),
+        "X-SECURITY-TOKEN": response.headers.get("X-SECURITY-TOKEN")
     }
 
-    resp = requests.post(f"{BASE_URL}/api/v1/session", headers=headers, json=payload)
-    if resp.status_code != 200:
-        logging.error("❌ Login fehlgeschlagen: %s", resp.text)
-        return None, None
+# === Order senden ===
+def place_order(direction, epic, price, size):
+    session = get_session()
 
-    cst = resp.headers.get("CST")
-    token = resp.headers.get("X-SECURITY-TOKEN")
+    headers = {
+        "X-CAP-API-KEY": API_KEY,
+        "CST": session["CST"],
+        "X-SECURITY-TOKEN": session["X-SECURITY-TOKEN"],
+        "Content-Type": "application/json"
+    }
 
-    if not cst or not token:
-        logging.error("❌ Tokens fehlen im Header: %s", resp.headers)
-        return None, None
+    order_data = {
+        "epic": epic,
+        "direction": direction.upper(),
+        "size": round(size, 2),
+        "orderType": "MARKET",
+        "currencyCode": "USD",
+        "forceOpen": True,
+        "guaranteedStop": False
+    }
 
-    logging.info("✅ Login erfolgreich")
-    return cst, token
+    response = requests.post(f"{BASE_URL}/api/v1/positions/otc", json=order_data, headers=headers)
+    response.raise_for_status()
+    return response.json()
 
-def close_all_positions(headers):
-    """Schließt ALLE offenen Positionen, egal welches Symbol."""
-    resp = requests.get(f"{BASE_URL}/api/v1/positions", headers=headers)
-    if resp.status_code != 200:
-        logging.error("❌ Fehler beim Abrufen offener Positionen")
-        return
-
-    for pos in resp.json().get("positions", []):
-        deal_id = pos["position"]["dealId"]
-        direction = pos["position"]["direction"]
-        size = pos["position"]["size"]
-
-        close_data = {
-            "dealId": deal_id,
-            "direction": "SELL" if direction == "BUY" else "BUY",
-            "orderType": "MARKET",
-            "size": size
-        }
-
-        logging.info(f"🔁 Schließe Position: {deal_id} ({direction}, Größe: {size})")
-        close_resp = requests.post(f"{BASE_URL}/api/v1/positions/otc", headers=headers, json=close_data)
-        if close_resp.status_code == 200:
-            logging.info("✅ Position geschlossen")
-        else:
-            logging.warning("⚠️ Fehler beim Schließen: %s", close_resp.text)
-
-@app.route("/webhook", methods=["POST"])
+# === Webhook Endpoint ===
+@app.route('/webhook', methods=['POST'])
 def webhook():
+    data = request.get_json()
+    print("Received Webhook:", data)
+
     try:
-        data = request.get_json(force=True)
-        logging.info("📩 Webhook empfangen: %s", data)
+        action = data["action"]
+        symbol = data["symbol"].replace("/", "")  # z.B. EURUSD
+        price = float(data["price"])
+        size = float(data["size"])
 
-        symbol = data.get("symbol")
-        position = data.get("position")
-        size = float(data.get("size", 0.1))
-
-        if position not in ("long", "short") or not symbol:
-            return jsonify({"error": "Ungültige Daten"}), 400
-
-        action = "BUY" if position == "long" else "SELL"
-
-        cst, token = login()
-        if not cst or not token:
-            return jsonify({"error": "Login fehlgeschlagen"}), 500
-
-        headers = {
-            "X-CAP-API-KEY": API_KEY,
-            "CST": cst,
-            "X-SECURITY-TOKEN": token,
-            "Content-Type": "application/json"
+        # MAPPING zu einem echten Epic von Capital.com (Beispielhaft!)
+        symbol_map = {
+            "EURUSD": "CS.D.EURUSD.CFD.IP",
+            "USDJPY": "CS.D.USDJPY.CFD.IP",
+            # Füge weitere hinzu
         }
 
-        # Zuerst alle Positionen schließen
-        logging.info("🧹 Schließe alle offenen Positionen...")
-        close_all_positions(headers)
+        epic = symbol_map.get(symbol.upper())
+        if not epic:
+            return jsonify({"status": "error", "message": f"Unbekanntes Symbol: {symbol}"}), 400
 
-        # Produkt suchen
-        market_resp = requests.get(f"{BASE_URL}/api/v1/markets?searchTerm={symbol}", headers=headers)
-        if market_resp.status_code != 200:
-            return jsonify({"error": "Produktsuche fehlgeschlagen"}), 500
-
-        markets = market_resp.json().get("markets", [])
-        if not markets:
-            return jsonify({"error": "Produkt nicht gefunden"}), 404
-
-        epic = markets[0]["epic"]
-        logging.info("🎯 EPIC gefunden: %s", epic)
-
-        # Neue Position eröffnen
-        order_data = {
-            "epic": epic,
-            "direction": action,
-            "orderType": "MARKET",
-            "size": size,
-            "currencyCode": "EUR",
-            "forceOpen": True,
-            "guaranteedStop": False
-        }
-
-        order_resp = requests.post(f"{BASE_URL}/api/v1/positions", headers=headers, json=order_data)
-        if order_resp.status_code != 200:
-            return jsonify({"error": "Order fehlgeschlagen", "details": order_resp.text}), 500
-
-        deal_ref = order_resp.json().get("dealReference")
-        if not deal_ref:
-            return jsonify({"error": "Keine Deal-Referenz erhalten"}), 500
-
-        confirm_resp = requests.get(f"{BASE_URL}/api/v1/confirms/{deal_ref}", headers=headers)
-        if confirm_resp.status_code != 200:
-            return jsonify({"error": "Orderbestätigung fehlgeschlagen"}), 500
-
-        confirm_data = confirm_resp.json()
-        if confirm_data.get("dealStatus", "").upper() == "ACCEPTED":
-            logging.info("✅ Order akzeptiert")
-            return jsonify({"status": "ok", "message": "Order erfolgreich", "details": confirm_data}), 200
-        else:
-            return jsonify({"error": "Order abgelehnt", "details": confirm_data}), 400
+        result = place_order(action, epic, price, size)
+        return jsonify({"status": "success", "details": result})
 
     except Exception as e:
-        logging.exception("❌ Ausnahme im Webhook")
-        return jsonify({"error": "Serverfehler"}), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+# === Startpunkt für lokale Tests (optional) ===
+if __name__ == '__main__':
+    app.run(port=5000, debug=True)
+
