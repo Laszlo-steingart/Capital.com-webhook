@@ -1,10 +1,7 @@
 from flask import Flask, request, jsonify
 import requests
-import hmac
-import hashlib
-import time
-import base64
 import pyotp
+import os
 
 app = Flask(__name__)
 
@@ -80,11 +77,11 @@ def webhook():
         price = float(data["price"])
         size = float(data["size"])
 
-        # MAPPING zu einem echten Epic von Capital.com (Beispielhaft!)
+        # MAPPING zu Capital.com Epic-Codes (hier Beispielhaft!)
         symbol_map = {
             "EURUSD": "CS.D.EURUSD.CFD.IP",
             "USDJPY": "CS.D.USDJPY.CFD.IP",
-            # Füge weitere hinzu
+            # Weitere hinzufügen bei Bedarf
         }
 
         epic = symbol_map.get(symbol.upper())
@@ -97,7 +94,7 @@ def webhook():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# === Startpunkt für lokale Tests (optional) ===
+# === Startpunkt für Render: bind to 0.0.0.0 und nutze Umgebungsport ===
 if __name__ == '__main__':
-    app.run(port=5000, debug=True)
-
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
