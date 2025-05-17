@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import requests
 import pyotp
 import os
+import json
 
 app = Flask(__name__)
 
@@ -41,21 +42,33 @@ def get_session():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        # Logge Rohdaten (auch wenn kein gültiges JSON)
-        raw = request.data.decode("utf-8")
-        print("📦 Rohdaten empfangen:", raw)
+        # Header und Body für Debug anzeigen
+        print("📥 HEADERS:", dict(request.headers))
+        raw_body = request.data.decode("utf-8")
+        print("📦 BODY (raw):", raw_body)
 
-        # Versuche JSON zu parsen
-        data = request.get_json(silent=True)
+        # Versuche JSON aus dem Body zu parsen
+        try:
+            data = request.get_json(force=True)
+        except Exception:
+            try:
+                data = json.loads(raw_body)
+            except Exception as e:
+                return jsonify({"error": "Konnte Body nicht als JSON parsen", "details": str(e)}), 400
+
         if not data:
-            return jsonify({"error": "Kein oder ungültiges JSON empfangen"}), 400
+            return jsonify({"error": "Leerer oder ungültiger JSON-Body"}), 400
 
         print("📩 Geparstes JSON:", data)
 
+        # Felder extrahieren
         action = data.get("action")
         symbol = data.get("symbol", "").replace("/", "")
-        price = float(data.get("price", 0))
-        size = float(data.get("size", 0))
+        try:
+            price = float(data.get("price", 0))
+            size = float(data.get("size", 0))
+        except ValueError:
+            return jsonify({"error": "Preis oder Größe sind keine Zahlen"}), 400
 
         if not all([action, symbol, price, size]):
             return jsonify({"error": "Fehlende oder ungültige Felder"}), 400
@@ -64,14 +77,16 @@ def webhook():
         symbol_map = {
             "EURUSD": "CS.D.EURUSD.CFD.IP",
             "USDJPY": "CS.D.USDJPY.CFD.IP"
-            # Weitere bei Bedarf
+            # Weitere Symbole hier hinzufügen
         }
         epic = symbol_map.get(symbol.upper())
         if not epic:
             return jsonify({"error": f"Unbekanntes Symbol: {symbol}"}), 400
 
-        # Beispielausgabe – Trade noch NICHT wirklich ausgeführt
+        # Session holen (Capital.com Login)
         session = get_session()
+
+        # Ausgabe – Trade hier noch nicht ausgeführt
         print(f"✅ Trade empfangen → {action.upper()} {size}x {epic} @ {price}")
         return jsonify({"status": "ok", "info": "Trade empfangen und geprüft"})
 
