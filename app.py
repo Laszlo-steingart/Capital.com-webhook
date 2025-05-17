@@ -1,110 +1,109 @@
 from flask import Flask, request, jsonify
 import requests
-import logging
 import pyotp
+import os
 
 app = Flask(__name__)
 
-# >>>>>>>> ZUGANGSDATEN <<<<<<<<
+# === Capital.com Zugangsdaten ===
 API_KEY = "mV5fieaBA6qmRQBV"
-API_USERNAME = "l.steingart@icloud.com"  # <-- wichtig: kein @, das ist der API-Login
+API_USERNAME = "l.steingart@icloud.com"
 API_PASSWORD = "bE@u3kMaK879TfY"
 TOTP_SECRET = "5USUDSPOGCQ3NMKB"
 BASE_URL = "https://api-capital.backend-capital.com"
 
-logging.basicConfig(level=logging.DEBUG)
+# === TOTP generieren ===
+def get_totp(secret):
+    totp = pyotp.TOTP(secret)
+    return totp.now()
 
-def login():
-    otp = pyotp.TOTP(TOTP_SECRET).now()
-    logging.info(f"🔐 Generierter OTP: {otp}")
-
+# === Capital.com Session aufbauen ===
+def get_session():
     url = f"{BASE_URL}/api/v1/session"
+    payload = {
+        "identifier": API_USERNAME,
+        "password": API_PASSWORD,
+        "encrypted": False,
+        "totpCode": get_totp(TOTP_SECRET)
+    }
+
     headers = {
         "X-CAP-API-KEY": API_KEY,
         "Content-Type": "application/json"
     }
-    payload = {
-        "identifier": API_USERNAME,
-        "password": API_PASSWORD,
-        "oneTimePassword": otp
+
+    response = requests.post(url, json=payload, headers=headers)
+    response.raise_for_status()
+
+    return {
+        "CST": response.headers.get("CST"),
+        "X-SECURITY-TOKEN": response.headers.get("X-SECURITY-TOKEN")
     }
 
-    resp = requests.post(url, json=payload, headers=headers)
-    if resp.status_code != 200:
-        logging.error("❌ Login fehlgeschlagen: %s", resp.text)
-        return None, None
+# === Order senden ===
+def place_order(direction, epic, price, size):
+    session = get_session()
 
-    cst = resp.headers.get("CST")
-    security_token = resp.headers.get("X-SECURITY-TOKEN")
+    headers = {
+        "X-CAP-API-KEY": API_KEY,
+        "CST": session["CST"],
+        "X-SECURITY-TOKEN": session["X-SECURITY-TOKEN"],
+        "Content-Type": "application/json"
+    }
 
-    if not cst or not security_token:
-        logging.error("❌ Token fehlen im Header")
-        return None, None
+    order_data = {
+        "epic": epic,
+        "direction": direction.upper(),
+        "size": round(size, 2),
+        "orderType": "MARKET",
+        "currencyCode": "USD",
+        "forceOpen": True,
+        "guaranteedStop": False
+    }
 
-    logging.info("✅ Login erfolgreich mit 2FA")
-    return cst, security_token
+    response = requests.post(f"{BASE_URL}/api/v1/positions/otc", json=order_data, headers=headers)
+    response.raise_for_status()
+    return response.json()
 
+# === Webhook Endpoint ===
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        data = request.get_json(force=True)
-        logging.info("📩 Webhook empfangen: %s", data)
+        data = request.get_json()
+        print("📩 Webhook empfangen:", data)
 
-        symbol = data.get("symbol")
+        if not data:
+            return jsonify({"error": "Kein oder ungültiges JSON empfangen"}), 400
+
         action = data.get("action")
-        size = float(data.get("size", 0.03))
+        symbol = data.get("symbol", "").replace("/", "")
+        price = float(data.get("price", 0))
+        size = float(data.get("size", 0))
 
-        if not all([symbol, action, size]):
-            return "Fehlende Felder", 400
+        if not all([action, symbol, price, size]):
+            return jsonify({"error": "Fehlende Felder in Webhook"}), 400
 
-        # Login
-        cst, security_token = login()
-        if not cst or not security_token:
-            return "Login fehlgeschlagen", 500
-
-        # Produkt suchen
-        headers = {
-            "X-CAP-API-KEY": API_KEY,
-            "CST": cst,
-            "X-SECURITY-TOKEN": security_token,
-            "Content-Type": "application/json"
+        # Symbol-Mapping zu Capital.com EPIC
+        symbol_map = {
+            "EURUSD": "CS.D.EURUSD.CFD.IP",
+            "USDJPY": "CS.D.USDJPY.CFD.IP"
+            # Weitere Symbole hier eintragen
         }
 
-        market_resp = requests.get(f"{BASE_URL}/api/v1/markets?searchTerm={symbol}", headers=headers)
-        if market_resp.status_code != 200:
-            logging.error("❌ Produktsuche fehlgeschlagen: %s", market_resp.text)
-            return "Produktsuche fehlgeschlagen", 500
+        epic = symbol_map.get(symbol.upper())
+        if not epic:
+            print("❌ Symbol nicht gefunden:", symbol)
+            return jsonify({"error": f"Unbekanntes Symbol: {symbol}"}), 400
 
-        markets = market_resp.json().get("markets", [])
-        if not markets:
-            logging.error("❌ Kein Markt gefunden")
-            return "Produkt nicht gefunden", 404
-
-        epic = markets[0]["epic"]
-        logging.info("✅ Gefundener EPIC: %s", epic)
-
-        # Order senden
-        order_data = {
-            "epic": epic,
-            "direction": action.upper(),
-            "orderType": "MARKET",
-            "size": size,
-            "currencyCode": "EUR",
-            "forceOpen": True,
-            "guaranteedStop": False
-        }
-
-        order_resp = requests.post(f"{BASE_URL}/api/v1/positions", json=order_data, headers=headers)
-        if order_resp.status_code != 201:
-            logging.error("❌ Order fehlgeschlagen: %s", order_resp.text)
-            return "Order fehlgeschlagen", 500
-
-        logging.info("✅ Order erfolgreich ausgeführt")
-        return jsonify({"status": "ok", "message": "Order ausgeführt"}), 200
+        result = place_order(action, epic, price, size)
+        print("✅ Order gesendet:", result)
+        return jsonify({"status": "success", "details": result})
 
     except Exception as e:
-        logging.exception("❌ Fehler im Webhook")
-        return "Serverfehler", 500
+        print("❌ Fehler beim Webhook:", str(e))
+        return jsonify({"status": "error", "message": str(e)}), 500
 
+# === Flask starten ===
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
