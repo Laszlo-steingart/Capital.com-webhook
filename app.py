@@ -1,100 +1,110 @@
 from flask import Flask, request, jsonify
 import requests
+import logging
 import pyotp
-import os
-import json
 
 app = Flask(__name__)
 
-# === Capital.com Zugangsdaten ===
+# >>>>>>>> ZUGANGSDATEN <<<<<<<<
 API_KEY = "mV5fieaBA6qmRQBV"
-API_USERNAME = "l.steingart@icloud.com"
+API_USERNAME = "l.steingart@icloud.com"  # <-- wichtig: kein @, das ist der API-Login
 API_PASSWORD = "bE@u3kMaK879TfY"
 TOTP_SECRET = "5USUDSPOGCQ3NMKB"
 BASE_URL = "https://api-capital.backend-capital.com"
 
-# === TOTP-Code erzeugen ===
-def get_totp(secret):
-    return pyotp.TOTP(secret).now()
+logging.basicConfig(level=logging.DEBUG)
 
-# === Session starten ===
-def get_session():
-    response = requests.post(
-        f"{BASE_URL}/api/v1/session",
-        headers={
-            "X-CAP-API-KEY": API_KEY,
-            "Content-Type": "application/json"
-        },
-        json={
-            "identifier": API_USERNAME,
-            "password": API_PASSWORD,
-            "encrypted": False,
-            "totpCode": get_totp(TOTP_SECRET),
-        }
-    )
-    response.raise_for_status()
-    return {
-        "CST": response.headers["CST"],
-        "X-SECURITY-TOKEN": response.headers["X-SECURITY-TOKEN"]
+def login():
+    otp = pyotp.TOTP(TOTP_SECRET).now()
+    logging.info(f"🔐 Generierter OTP: {otp}")
+
+    url = f"{BASE_URL}/api/v1/session"
+    headers = {
+        "X-CAP-API-KEY": API_KEY,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "identifier": API_USERNAME,
+        "password": API_PASSWORD,
+        "oneTimePassword": otp
     }
 
-# === Haupt-Webhook-Endpunkt ===
+    resp = requests.post(url, json=payload, headers=headers)
+    if resp.status_code != 200:
+        logging.error("❌ Login fehlgeschlagen: %s", resp.text)
+        return None, None
+
+    cst = resp.headers.get("CST")
+    security_token = resp.headers.get("X-SECURITY-TOKEN")
+
+    if not cst or not security_token:
+        logging.error("❌ Token fehlen im Header")
+        return None, None
+
+    logging.info("✅ Login erfolgreich mit 2FA")
+    return cst, security_token
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        # Header und Body für Debug anzeigen
-        print("📥 HEADERS:", dict(request.headers))
-        raw_body = request.data.decode("utf-8")
-        print("📦 BODY (raw):", raw_body)
+        data = request.get_json(force=True)
+        logging.info("📩 Webhook empfangen: %s", data)
 
-        # Versuche JSON aus dem Body zu parsen
-        try:
-            data = request.get_json(force=True)
-        except Exception:
-            try:
-                data = json.loads(raw_body)
-            except Exception as e:
-                return jsonify({"error": "Konnte Body nicht als JSON parsen", "details": str(e)}), 400
-
-        if not data:
-            return jsonify({"error": "Leerer oder ungültiger JSON-Body"}), 400
-
-        print("📩 Geparstes JSON:", data)
-
-        # Felder extrahieren
+        symbol = data.get("symbol")
         action = data.get("action")
-        symbol = data.get("symbol", "").replace("/", "")
-        try:
-            price = float(data.get("price", 0))
-            size = float(data.get("size", 0))
-        except ValueError:
-            return jsonify({"error": "Preis oder Größe sind keine Zahlen"}), 400
+        size = float(data.get("size", 0.03))
 
-        if not all([action, symbol, price, size]):
-            return jsonify({"error": "Fehlende oder ungültige Felder"}), 400
+        if not all([symbol, action, size]):
+            return "Fehlende Felder", 400
 
-        # Mapping zu Capital.com EPICs
-        symbol_map = {
-            "EURUSD": "CS.D.EURUSD.CFD.IP",
-            "USDJPY": "CS.D.USDJPY.CFD.IP"
-            # Weitere Symbole hier hinzufügen
+        # Login
+        cst, security_token = login()
+        if not cst or not security_token:
+            return "Login fehlgeschlagen", 500
+
+        # Produkt suchen
+        headers = {
+            "X-CAP-API-KEY": API_KEY,
+            "CST": cst,
+            "X-SECURITY-TOKEN": security_token,
+            "Content-Type": "application/json"
         }
-        epic = symbol_map.get(symbol.upper())
-        if not epic:
-            return jsonify({"error": f"Unbekanntes Symbol: {symbol}"}), 400
 
-        # Session holen (Capital.com Login)
-        session = get_session()
+        market_resp = requests.get(f"{BASE_URL}/api/v1/markets?searchTerm={symbol}", headers=headers)
+        if market_resp.status_code != 200:
+            logging.error("❌ Produktsuche fehlgeschlagen: %s", market_resp.text)
+            return "Produktsuche fehlgeschlagen", 500
 
-        # Ausgabe – Trade hier noch nicht ausgeführt
-        print(f"✅ Trade empfangen → {action.upper()} {size}x {epic} @ {price}")
-        return jsonify({"status": "ok", "info": "Trade empfangen und geprüft"})
+        markets = market_resp.json().get("markets", [])
+        if not markets:
+            logging.error("❌ Kein Markt gefunden")
+            return "Produkt nicht gefunden", 404
+
+        epic = markets[0]["epic"]
+        logging.info("✅ Gefundener EPIC: %s", epic)
+
+        # Order senden
+        order_data = {
+            "epic": epic,
+            "direction": action.upper(),
+            "orderType": "MARKET",
+            "size": size,
+            "currencyCode": "EUR",
+            "forceOpen": True,
+            "guaranteedStop": False
+        }
+
+        order_resp = requests.post(f"{BASE_URL}/api/v1/positions", json=order_data, headers=headers)
+        if order_resp.status_code != 201:
+            logging.error("❌ Order fehlgeschlagen: %s", order_resp.text)
+            return "Order fehlgeschlagen", 500
+
+        logging.info("✅ Order erfolgreich ausgeführt")
+        return jsonify({"status": "ok", "message": "Order ausgeführt"}), 200
 
     except Exception as e:
-        print("❌ Fehler beim Verarbeiten:", str(e))
-        return jsonify({"error": str(e)}), 500
+        logging.exception("❌ Fehler im Webhook")
+        return "Serverfehler", 500
 
-# === Server starten ===
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=5000)
