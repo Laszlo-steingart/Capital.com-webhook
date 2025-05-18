@@ -1,10 +1,11 @@
 from flask import Flask, request, jsonify
 import requests
 import pyotp
+import os  # NEU: Für dynamischen Port bei Render
 
 app = Flask(__name__)
 
-# === DEINE CAPITAL.COM API ZUGANGSDATEN ===
+# === DEINE CAPITAL.COM API-ZUGANGSDATEN ===
 API_KEY = "mV5fieaBA6qmRQBV"
 USERNAME = "l.steingart@icloud.com"
 PASSWORD = "bE@u3kMaK879TfY"
@@ -14,11 +15,11 @@ BASE_URL = "https://api-capital.backend-capital.com"
 session = requests.Session()
 
 def get_totp_code(secret):
-    """Erzeugt den aktuellen 2FA Code"""
+    """Erzeuge den aktuellen TOTP 2FA-Code"""
     return pyotp.TOTP(secret).now()
 
 def login():
-    """Meldet sich mit API-Key + Passwort + 2FA bei Capital.com an"""
+    """Logge dich bei Capital.com API ein (inkl. 2FA)"""
     code = get_totp_code(TOTP_SECRET)
     payload = {
         "identifier": USERNAME,
@@ -35,7 +36,7 @@ def login():
     if response.status_code != 200:
         raise Exception(f"Login fehlgeschlagen: {response.text}")
 
-    # Auth-Token speichern
+    # Tokens setzen
     session.headers.update({
         "CST": response.headers["CST"],
         "X-SECURITY-TOKEN": response.headers["X-SECURITY-TOKEN"],
@@ -45,11 +46,11 @@ def login():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    """Empfängt das Signal von TradingView"""
+    """Empfängt Webhook von TradingView"""
     data = request.get_json()
-    action = data.get("action")      # "buy" oder "sell"
-    symbol = data.get("symbol")      # z.B. "US500"
-    size = float(data.get("size"))   # Positionsgröße
+    action = data.get("action")
+    symbol = data.get("symbol")
+    size = float(data.get("size"))
 
     if action not in ["buy", "sell"]:
         return jsonify({"error": "Ungültige Aktion"}), 400
@@ -59,7 +60,7 @@ def webhook():
     except Exception as e:
         return jsonify({"error": str(e)}), 401
 
-    # Zuerst alte Position schließen (Gegenteil von aktueller Richtung)
+    # Alte Position schließen
     opposite = "SELL" if action == "buy" else "BUY"
     close_payload = {
         "epic": symbol,
@@ -72,7 +73,7 @@ def webhook():
     }
     session.post(f"{BASE_URL}/api/v1/positions/otc", json=close_payload)
 
-    # Neue Position öffnen
+    # Neue Position eröffnen
     open_payload = {
         "epic": symbol,
         "direction": action.upper(),
@@ -89,5 +90,7 @@ def webhook():
     else:
         return jsonify({"error": response.text}), 400
 
+# === Render braucht dynamischen Port ===
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
