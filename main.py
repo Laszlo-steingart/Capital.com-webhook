@@ -61,7 +61,7 @@ def get_epic_by_name(name="Bitcoin"):
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    print("📥 Rohdaten:", request.data)  # <- NEU hinzugefügt!
+    print("📥 Rohdaten:", request.data)
 
     try:
         data = request.get_json(force=True)
@@ -71,7 +71,7 @@ def webhook():
         return jsonify({"error": "Ungültiges JSON"}), 400
 
     action = data.get("action")
-    symbol_input = data.get("symbol", "Bitcoin")
+    symbol_input = data.get("symbol", "Bitcoin").upper()
     size = data.get("size")
 
     if action not in ["buy", "sell"] or not symbol_input or not size:
@@ -84,7 +84,13 @@ def webhook():
         print("❌ Login-Fehler:", str(e))
         return jsonify({"error": str(e)}), 401
 
-    epic = get_epic_by_name(symbol_input)
+    # 🔁 Symbol-Mapping
+    symbol_map = {
+        "Bitcoin/USD": "Bitcoin"
+    }
+    search_term = symbol_map.get(symbol_input, symbol_input)
+
+    epic = get_epic_by_name(search_term)
     if not epic:
         return jsonify({"error": f"Kein Epic gefunden für {symbol_input}"}), 400
 
