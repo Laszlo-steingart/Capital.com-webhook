@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: capital-trading-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: FLASK_ENV
+        value: production
+    plan: free
