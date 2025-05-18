@@ -5,7 +5,7 @@ import os
 
 app = Flask(__name__)
 
-# === CAPITAL.COM API-ZUGANGSDATEN ===
+# === API-ZUGANGSDATEN ===
 API_KEY = "mV5fieaBA6qmRQBV"
 USERNAME = "l.steingart@icloud.com"
 PASSWORD = "bE@u3kMaK879TfY"
@@ -45,6 +45,20 @@ def login():
     })
     print("✅ Login erfolgreich!")
 
+def get_epic_by_name(name="Bitcoin"):
+    print("🔍 Suche Epic für:", name)
+    response = session.get(f"{BASE_URL}/api/v1/markets/{name}")
+    if response.status_code == 200:
+        markets = response.json().get("markets", [])
+        for market in markets:
+            if "Bitcoin" in market["instrumentName"]:
+                print("✅ Gefundener Epic:", market["epic"])
+                return market["epic"]
+        print("⚠️ Kein passender Epic gefunden")
+    else:
+        print("❌ Fehler bei Market-Suche:", response.status_code, response.text)
+    return None
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
@@ -55,10 +69,10 @@ def webhook():
         return jsonify({"error": "Ungültiges JSON"}), 400
 
     action = data.get("action")
-    symbol = data.get("symbol")
+    symbol_input = data.get("symbol", "Bitcoin")  # Eingehender Wert wie BTCUSD
     size = data.get("size")
 
-    if action not in ["buy", "sell"] or not symbol or not size:
+    if action not in ["buy", "sell"] or not symbol_input or not size:
         print("⚠️ Ungültige Daten:", data)
         return jsonify({"error": "Fehlende oder ungültige Felder"}), 400
 
@@ -68,9 +82,15 @@ def webhook():
         print("❌ Login-Fehler:", str(e))
         return jsonify({"error": str(e)}), 401
 
+    epic = get_epic_by_name(symbol_input)
+    if not epic:
+        return jsonify({"error": f"Kein Epic gefunden für {symbol_input}"}), 400
+
     opposite = "SELL" if action == "buy" else "BUY"
+
+    # Close Order
     close_payload = {
-        "epic": symbol,
+        "epic": epic,
         "direction": opposite,
         "size": size,
         "orderType": "MARKET",
@@ -78,13 +98,13 @@ def webhook():
         "forceOpen": False,
         "currencyCode": "USD"
     }
-
     print("🔁 Sende Close-Order:", close_payload)
     close_response = session.post(f"{BASE_URL}/api/v1/positions/otc", json=close_payload)
     print("🔁 Antwort Close:", close_response.status_code, close_response.text)
 
+    # Open Order
     open_payload = {
-        "epic": symbol,
+        "epic": epic,
         "direction": action.upper(),
         "size": size,
         "orderType": "MARKET",
@@ -92,7 +112,6 @@ def webhook():
         "forceOpen": True,
         "currencyCode": "USD"
     }
-
     print("🟢 Sende Open-Order:", open_payload)
     response = session.post(f"{BASE_URL}/api/v1/positions/otc", json=open_payload)
     print("🟢 Antwort Open:", response.status_code, response.text)
