@@ -71,7 +71,7 @@ def webhook():
         return jsonify({"error": "Ungültiges JSON"}), 400
 
     action = data.get("action")
-    symbol_input = data.get("symbol", "Bitcoin").upper()
+    symbol_input = data.get("symbol", "Bitcoin")
     size = data.get("size")
 
     if action not in ["buy", "sell"] or not symbol_input or not size:
@@ -84,11 +84,13 @@ def webhook():
         print("❌ Login-Fehler:", str(e))
         return jsonify({"error": str(e)}), 401
 
-    # 🔁 Symbol-Mapping
+    # 🔁 Symbol-Mapping mit .upper()
     symbol_map = {
-        "Bitcoin/USD": "Bitcoin"
+        "BTCUSD": "Bitcoin"
     }
-    search_term = symbol_map.get(symbol_input, symbol_input)
+    symbol_key = symbol_input.upper()
+    search_term = symbol_map.get(symbol_key, symbol_key)
+    print("🔎 Suche Epic für:", search_term)
 
     epic = get_epic_by_name(search_term)
     if not epic:
