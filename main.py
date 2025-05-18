@@ -47,14 +47,15 @@ def login():
 
 def get_epic_by_name(name="Bitcoin"):
     print("🔍 Suche Epic für:", name)
-    response = session.get(f"{BASE_URL}/api/v1/markets/{name}")
+    response = session.get(f"{BASE_URL}/api/v1/markets?searchTerm={name}")
+    print("🌐 Antwort Market-Suche:", response.status_code, response.text)
     if response.status_code == 200:
         markets = response.json().get("markets", [])
         for market in markets:
-            if "Bitcoin" in market["instrumentName"]:
+            if name.lower() in market["instrumentName"].lower():
                 print("✅ Gefundener Epic:", market["epic"])
                 return market["epic"]
-        print("⚠️ Kein passender Epic gefunden")
+        print("⚠️ Kein passender Epic gefunden im Ergebnis")
     else:
         print("❌ Fehler bei Market-Suche:", response.status_code, response.text)
     return None
@@ -84,7 +85,6 @@ def webhook():
         print("❌ Login-Fehler:", str(e))
         return jsonify({"error": str(e)}), 401
 
-    # 🔁 Symbol-Mapping mit .upper()
     symbol_map = {
         "BTCUSD": "Bitcoin"
     }
